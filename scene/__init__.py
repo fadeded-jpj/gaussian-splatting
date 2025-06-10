@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -17,6 +17,9 @@ from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from scene.cameras import Camera
+import torch
+import copy
 
 class Scene:
 
@@ -98,3 +101,28 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+
+    def getShiftedCamera(self, camera, trans_dist=0.1):
+        focal_x, focal_y = camera.get_camera_matrix()
+        point = torch.tensor([trans_dist, 0.0, 0.0, 1.0], device="cuda")
+        point_world = torch.inverse(focal_y) @ point
+        point_world = point_world[:3]
+        camera_center_trans = (point_world - camera.camera_center).cpu().numpy()
+
+        # camera = Camera(
+        #    colmap_id=camera.colmap_id,
+        #    R = camera.R,
+        #    T = camera.T,
+        #    FoVx=camera.FoVx,
+        #    FoVy=camera.FoVy,
+        #    image=torch.ones_like(camera.original_image),
+        #    invdepthmap=camera.invdepthmap,
+        #    image_name=None,
+        #    uid=camera.uid,
+        #    trans=camera_center_trans,
+        #    resolution= camera.resolution,
+        #    depth_params= camera.depth_params
+        # )
+        res = copy.copy(camera)
+        res.shift_camera(camera_center_trans)
+        return res

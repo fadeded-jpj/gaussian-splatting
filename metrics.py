@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -63,6 +63,9 @@ def evaluate(model_paths):
                 gt_dir = method_dir/ "gt"
                 renders_dir = method_dir / "renders"
                 renders, gts, image_names = readImages(renders_dir, gt_dir)
+
+                print("render", renders_dir)
+                print("gt", gt_dir)
 
                 ssims = []
                 psnrs = []

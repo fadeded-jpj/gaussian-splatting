@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -12,11 +12,13 @@
 import os
 import random
 import json
+from scene.cameras import VirtualCam
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
+from utils.pose_utils import generate_random_poses
 
 class Scene:
 
@@ -39,6 +41,7 @@ class Scene:
 
         self.train_cameras = {}
         self.test_cameras = {}
+        self.virtual_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.depths, args.eval, args.train_test_exp)
@@ -74,6 +77,14 @@ class Scene:
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args, scene_info.is_nerf_synthetic, True)
 
+            virtual_cams = []
+            virtual_poses = generate_random_poses(self.train_cameras[resolution_scale])
+            view = self.train_cameras[resolution_scale][0]
+            for pose in virtual_poses:
+                virtual_cams.append(VirtualCam(R=pose[:3,:3].T, T=pose[:3, 3], FoVx=view.FoVx, FoVy=view.FoVy,
+                                               width=view.image_width, height=view.image_height))
+            self.virtual_cameras[resolution_scale] = virtual_cams
+
         if self.loaded_iter:
             self.gaussians.load_ply(os.path.join(self.model_path,
                                                            "point_cloud",
@@ -98,3 +109,9 @@ class Scene:
 
     def getTestCameras(self, scale=1.0):
         return self.test_cameras[scale]
+
+    def getVirtualCameras(self, scale=1.0):
+        if len(self.virtual_cameras) == 0:
+            return [None]
+        else:
+            return self.virtual_cameras[scale]

@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -89,3 +89,15 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+def pearson_corrcoef(d_ras : torch.tensor, d_set : torch.tensor) -> torch.tensor:
+    mean_x = torch.mean(d_ras).cuda()
+    mean_y = torch.mean(d_set).cuda()
+    c1 = d_ras - mean_x
+    c2 = d_set - mean_y
+    cov = torch.sum(c1 * c2) / (len(d_ras) - 1)
+
+    var1 = torch.var(d_ras, unbiased=False).cuda()
+    var2 = torch.var(d_set, unbiased=False).cuda()
+
+    return cov / torch.sqrt(var1 * var2).cuda()

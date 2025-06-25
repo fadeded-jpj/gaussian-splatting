@@ -156,7 +156,8 @@ class GaussianModel:
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
+        tmp, _ = distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda())
+        dist2 = torch.clamp_min(tmp, 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
@@ -361,7 +362,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.tmp_radii = self.tmp_radii[valid_points_mask]
+        tr = self.tmp_radii[valid_points_mask]
+        self.tmp_radii = tr
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -415,6 +417,11 @@ class GaussianModel:
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)  # 梯度大且尺寸够大
 
+        dist, _ = distCUDA2(self.get_xyz)
+        selected_pts_mask2 = torch.logical_and(dist > (10.) * scene_extent,
+                                               torch.max(self.get_scaling, dim=1).values > scene_extent)
+        selected_pts_mask = torch.logical_or(selected_pts_mask, selected_pts_mask2)
+
         # 用于计算新点的数据
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
@@ -438,6 +445,27 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
+    def fsgs_op(self, scene_extent, radii, N = 3):
+
+        dist, nearIdx = distCUDA2(self.get_xyz)
+        selected_pts_mask = torch.logical_and(dist > (5. * scene_extent),
+                                          torch.max(self.get_scaling, dim=1).values > (scene_extent))
+
+        # TODO: 修改下面代码的爆显存bug
+        # self.tmp_radii = radii
+        newIdx = nearIdx[selected_pts_mask].reshape(-1).long()
+        source_xyz = self._xyz[selected_pts_mask].repeat(1, N, 1).reshape(-1, 3)
+        target_xyz = self._xyz[newIdx]
+        new_xyz = (source_xyz + target_xyz) / 2.0
+        new_scaling = self._scaling[newIdx]
+        new_rotation = torch.zeros_like(self._rotation[newIdx])
+        new_rotation[:, 0] = 1
+        new_features_dc = torch.zeros_like(self._features_dc[newIdx])
+        new_features_rest = torch.zeros_like(self._features_rest[newIdx])
+        new_opacity = self._opacity[newIdx]
+        new_tmp_radii = self.tmp_radii[newIdx]
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_tmp_radii)
+
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)   # 筛出大于阈值的梯度
@@ -456,13 +484,16 @@ class GaussianModel:
         # 加一个新高斯
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_tmp_radii)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii, iter):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent)
         self.densify_and_split(grads, max_grad, extent)
+        if iter < 2000:
+            None
+            self.fsgs_op(extent, radii)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze() # 筛出不透明度过低的高斯
         if max_screen_size:

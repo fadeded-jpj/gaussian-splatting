@@ -322,7 +322,7 @@ def generate_random_poses(views):
         tmp_view = np.linalg.inv(tmp_view)
         tmp_view[:, 1:3] *= -1
         poses.append(tmp_view)
-        bounds.append([0.1, 1000])
+        bounds.append(view.bounds)
     poses = np.stack(poses, 0)
     bounds = np.stack(bounds)
 

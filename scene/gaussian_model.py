@@ -347,23 +347,24 @@ class GaussianModel:
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
 
-    def prune_points(self, mask):
-        valid_points_mask = ~mask
-        optimizable_tensors = self._prune_optimizer(valid_points_mask)
+    def prune_points(self, mask, iter):
+        if iter > 500:
+            valid_points_mask = ~mask
+            optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
 
-        self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+            self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
-        self.denom = self.denom[valid_points_mask]
-        self.max_radii2D = self.max_radii2D[valid_points_mask]
-        tr = self.tmp_radii[valid_points_mask]
-        self.tmp_radii = tr
+            self.denom = self.denom[valid_points_mask]
+            self.max_radii2D = self.max_radii2D[valid_points_mask]
+            tr = self.tmp_radii[valid_points_mask]
+            self.tmp_radii = tr
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -408,7 +409,7 @@ class GaussianModel:
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
-    def densify_and_split(self, grads, grad_threshold, scene_extent, N=2):
+    def densify_and_split(self, grads, grad_threshold, scene_extent, iter, N=2):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -443,7 +444,7 @@ class GaussianModel:
 
         # 删除原始点
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
-        self.prune_points(prune_filter)
+        self.prune_points(prune_filter, iter)
 
     def fsgs_op(self, scene_extent, radii, N = 3):
 
@@ -490,7 +491,7 @@ class GaussianModel:
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        self.densify_and_split(grads, max_grad, extent, iter)
         if iter < 2000:
             None
             self.fsgs_op(extent, radii)
@@ -500,7 +501,7 @@ class GaussianModel:
             big_points_vs = self.max_radii2D > max_screen_size  # 筛出屏蔽空间中过大的点
             big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent   # 世界空间中过大的点
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)   # 都删了
-        self.prune_points(prune_mask)
+        self.prune_points(prune_mask, iter)
         tmp_radii = self.tmp_radii
         self.tmp_radii = None
 

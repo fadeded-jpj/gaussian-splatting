@@ -315,25 +315,27 @@ def generate_random_poses_360(views, n_frames=10000, z_variation=0.1, z_phase=0)
 
 def generate_random_poses(views):
     n_poses = 10000 # args.n_random_poses
-    poses = []
+    poses, bounds = [], []
     for view in views:
         tmp_view = np.eye(4)
         tmp_view[:3] = np.concatenate([view.R.T, view.T[:, None]], 1)
         tmp_view = np.linalg.inv(tmp_view)
         tmp_view[:, 1:3] *= -1
         poses.append(tmp_view)
+        bounds.append([0.1, 1000])
     poses = np.stack(poses, 0)
+    bounds = np.stack(bounds)
 
-
-    scale = 1.
+    scale = 1. / (bounds.min() * .75)
     poses[:, :3, 3] *= scale
+    bounds *= scale
     poses, transform = recenter_poses(poses)
 
     # Find a reasonable 'focus depth' for this dataset as a weighted average
     # of near and far bounds in disparity space.
-    #close_depth, inf_depth = bounds.min() * .9, bounds.max() * 5.
+    close_depth, inf_depth = bounds.min() * .9, bounds.max() * 5.
     dt = .75
-    focal = 1. #/ (((1 - dt) / close_depth + dt / inf_depth))
+    focal = 1 / (((1 - dt) / close_depth + dt / inf_depth))
 
     # Get radii for spiral path using 90th percentile of camera positions.
     positions = poses[:, :3, 3]

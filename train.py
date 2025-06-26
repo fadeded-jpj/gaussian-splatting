@@ -46,13 +46,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
         sys.exit(f"Trying to use sparse adam but it is not installed, please install the correct rasterizer using pip install [3dgs_accel].")
 
-    depth_weight = 0.05
-
-
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, opt.optimizer_type)
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, shuffle=False)
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -64,14 +61,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
-    depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
-
-    viewpoint_stack = scene.getTrainCameras().copy()
-    virtual_stack = scene.getVirtualCameras().copy()
-    viewpoint_indices = list(range(len(viewpoint_stack)))
+    viewpoint_stack = None
+    virtual_stack = None
     ema_loss_for_log = 0.0
-    ema_Ll1depth_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
@@ -91,21 +83,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             except Exception as e:
                 network_gui.conn = None
 
-        iter_start.record()
-
-        gaussians.update_learning_rate(iteration)
+        #gaussians.update_learning_rate(iteration)
 
         # Every 1000 its we increase the levels of SH up to a maximum degree
-        if iteration % 1000 == 0:
+        if iteration % 500 == 0:
             gaussians.oneupSHdegree()
+
+        iter_start.record()
 
         # Pick a random Camera
         if not viewpoint_stack:
             viewpoint_stack = scene.getTrainCameras().copy()
-            viewpoint_indices = list(range(len(viewpoint_stack)))
-        rand_idx = randint(0, len(viewpoint_indices) - 1)
+
+        rand_idx = randint(0, len(viewpoint_stack) - 1)
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
-        vind = viewpoint_indices.pop(rand_idx)
 
         # Render
         if (iteration - 1) == debug_from:
@@ -113,7 +104,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, bg, use_trained_exp=dataset.train_test_exp, separate_sh=SPARSE_ADAM_AVAILABLE)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         image, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
 
         if viewpoint_cam.alpha_mask is not None:
@@ -143,9 +134,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         loss += depth_loss * opt.depth_weight
 
         if iteration > opt.end_sample_virtual:
-            opt.depth_weight = 0.01
+            opt.depth_weight = 0.001
 
-        if iteration % opt.sample_virtual_interval and iteration > opt.start_sample_virtual and iteration < opt.end_sample_virtual:
+        if iteration % opt.sample_virtual_interval == 0 and iteration > opt.start_sample_virtual and iteration < opt.end_sample_virtual:
+            if not virtual_stack:
+                virtual_stack = scene.getVirtualCameras().copy()
+
             virtual_cam = virtual_stack.pop(randint(0, len(virtual_stack) - 1))
 
             render_pkg_virtual = render(virtual_cam, gaussians, pipe, background)
@@ -181,10 +175,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-            ema_Ll1depth_for_log = ema_Ll1depth_for_log#0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{scene.gaussians._xyz.shape[0] / 3:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{scene.gaussians._xyz.shape[0]:.{1}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -202,23 +195,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                    size_threshold = None#20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii, iteration)
                     #None
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
 
             # Optimizer step
             if iteration < opt.iterations:
-                gaussians.exposure_optimizer.step()
-                gaussians.exposure_optimizer.zero_grad(set_to_none = True)
-                if use_sparse_adam:
-                    visible = radii > 0
-                    gaussians.optimizer.step(visible, radii.shape[0])
-                    gaussians.optimizer.zero_grad(set_to_none = True)
-                else:
                     gaussians.optimizer.step()
                     gaussians.optimizer.zero_grad(set_to_none = True)
+
+            gaussians.update_learning_rate(iteration)
+            if (iteration - opt.start_sample_virtual - 1) % opt.opacity_reset_interval == 0 and \
+                iteration > opt.start_sample_virtual:
+                gaussians.reset_opacity()
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
